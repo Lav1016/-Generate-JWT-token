@@ -1,112 +1,175 @@
-var mongoose = require("mongoose");
-var Schema = mongoose.Schema;
+const passport = require("passport");
+const _ = require("lodash");
 const bcrypt = require("bcryptjs");
+const User = require("./../models/user");
+const { sendMail, emailValidation,sendMailCustomer } = require("../util/mail");
+const { exceptionlogs, diff } = require("../util/utilCommon");
+let moment = require("moment");
 const jwt = require("jsonwebtoken");
-//const { validationResult } = require("express-validator");
+let url = require("url");
+var mongoose = require("mongoose");
+const mail = require('../config/mail')
 const saltRounds = 10;
 const salt = bcrypt.genSaltSync(saltRounds);
-let moment = require("moment");
-// var dt = new Date();
-// var linkExpiredTime = dt.setHours(dt.getHours() + 2);
+let uniqueValue = String(Math.floor(100000 + Math.random() * 900000));
+const { validationResult } = require("express-validator");
+var resourcehelper = require('../helper/resourcehelper');
+const { result, reject, findKey } = require("lodash");
+const { resolve } = require("path");
+const { response } = require("../app");
+const db = mongoose.connection;
 
-//ObjectId = Schema.ObjectId;
-var userSchema = new Schema({
-  firstName: {
-    type: String,
-    required: true,
-  },
-  lastName: {
-    type: String,
-    required: true,
-  },
-  email: {
-    type: String,
-    required: true,
-    index: {
-      unique: true,
-    },
-  },
-  userType: {
-    type: String,
-    required: true,
-  },
-  gender: {
-    type: String,
-    required: true,
-  },
+//call for add new users
+module.exports.signup = async (req, res, next) => {
+    let ipAddress = req.connection.remoteAddress;
 
-  address: {
-    type: String,
-  },
-  phone: {
-    type: Number,
-    required:true,
-    // index: {
-    //   unique: true,
-    // }
-  },
-  password: {
-    type: String,
-    required: true,
-  },
-  isForgotPasswordChanged: {
-    type: Boolean,
-    default: false,
-  },
-  isForgotPasswordChangedTime: {
-    type: Date,
-    default: moment(),
-  },
-  isActiveUser: {
-    type: Boolean,
-    default: false,
-  },
-  token:{
-type:String,
-default:""
-  },
-  ipAddress: {
-    type: String,
-  },
-  dateCreated: {
-    type: Date,
-    default: moment(),
-  },
-  dateUpdated: {
-    type: Date,
-    default: null,
-  },
+    try {
+        if (req.body.password == req.body.confirmPassword) {
 
-});
+            const userSignup = new User({
+                firstName: req.body.firstname,
+                lastName: req.body.lastname,
+                email: req.body.email,
+                userType: req.body.userType,
+                gender: req.body.gender,
+                address: req.body.address,
+                phone: req.body.phone,
+                password: req.body.password
+            });
 
+            const emailbyphone = await User.findOne({ email: req.body.email }); //check record where it present or not
 
+            if (Boolean(emailbyphone)) {
+                res.status(201).json({
+                    responseMsg: resourcehelper.duplicate_email_phone,
+                })
 
-// Custom validation for email
-userSchema.path("email").validate((val) => {
-  emailRegex = /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
-  return emailRegex.test(val);
-}, "Invalid e-mail address.");
+            } else {
 
-userSchema.pre("save", function (next) {
-  const hash = bcrypt.hashSync(this.password, salt);
-  this.password = hash;
-  this.saltSecret = salt;
-  next();
-});
+                const saveRecord = await userSignup.save();    //save the record 
+                const mailoption ={
+                    email:saveRecord.email,
+                    firstName:saveRecord.firstName,
+                    customerId:saveRecord._id
+                }
+               const sendMail = await sendMailCustomer(mailoption);
+                
+               console.log(sendMail)
 
-// Verify Password
-userSchema.methods.verifyPassword = function (password) {
-  //console.log(password,this.password);
-  return bcrypt.compareSync(password, this.password);
+                res.status(resourcehelper.msg_save_code).json({
+                    responseMsg: resourcehelper.msg_save_text,
+                    user: saveRecord
+                })
+
+            }
+
+        } else {
+            res.status(201).json({
+                responseMsg: resourcehelper.password_not_exist
+            })
+        }
+        // const errors = validationResult(req); // Finds the validation errors in this request and wraps them in an object with handy functions
+    } catch (ex) {
+        res.status(400).json({
+            responseCode: resourcehelper.exception_msg_code,
+            error: resourcehelper.exception_msg_text,
+            err: ex
+        });
+    }
+};
+module.exports.login = async (req, res, next) => {
+    // console.log(req.body);
+    let ipAddress = req.connection.remoteAddress;
+    try {
+        const user = await User.findOne({ email: req.body.email });
+        if (user) {
+            let users = new User();
+            //  const passwordmatch=user.verifyPassword(req.body.password);
+            // const passwordmatch= await bcrypt.compare(req.body.password, user.password);
+            const passwordmatch = user.verifyPassword(req.body.password);
+            if (passwordmatch) {
+                let objdetails = {
+                    emailId: req.body.email,
+                    userID: user._id
+                };
+                let tokenValue = users.generateJwt(objdetails);
+
+                res.status(200).json({
+                    msg: 'login successfully',
+                    status: true,
+                    loginUser: user,
+                    token: tokenValue
+                })
+            } else {
+                res.status(201).json({
+                    status: false,
+                    msg: 'record not found'
+                })
+            }
+        } else {
+            res.status(201).json({
+                status: false,
+                msg: 'record not found'
+            })
+        }
+
+    } catch (ex) {
+        res.status(400).json({
+            responseCode: resourcehelper.exception_msg_code,
+            error: resourcehelper.exception_msg_text,
+            err: ex,
+            status: false,
+        });
+    }
 };
 
-// Generate JWT token
-userSchema.methods.generateJwt = function (data) {
-  let token = jwt.sign(data, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXP,
-  });
-  return token;
-};
 
-const User = mongoose.model("user", userSchema);
-module.exports = User;
+module.exports.designerList = async (req, res, next) => {
+
+    try {
+
+        let designerlist = await User.find();
+        console.log(designerlist)
+        if (Boolean(designerlist)) {
+            res.status(resourcehelper.msg_save_code).json({
+                responseCode: "record Found",
+                designerList: designerlist,
+                status: true,
+            });
+        } else {
+            res.status(resourcehelper.notfound_code).json({
+                responseCode: resourcehelper.notfound_text,
+                designerList: designerlist,
+                status: false,
+            });
+        }
+
+    } catch (ex) {
+        res.status(resourcehelper.exception_msg_code).json({
+            responseCode: resourcehelper.exception_msg_code,
+            error: resourcehelper.exception_msg_text,
+            err: ex,
+            status: false,
+        });
+    }
+}
+
+module.exports.forgotPassword = async (req, res, next) => {
+    try{
+        const user = await User.findOne({ email: req.body.email });
+        if (user) {
+            
+           
+        } else {
+            res.status(201).json({
+                status: false,
+                msg: 'Invalid email you have enter!.'
+            })
+        }
+
+    }catch(ex){
+
+    }
+
+
+}
